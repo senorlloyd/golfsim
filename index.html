@@ -113,6 +113,7 @@ h2{font:600 1.05rem var(--display);margin:0}
       <button id="btnMusic" type="button" aria-pressed="false">Music on</button>
       <button id="btnNext" type="button" title="Next track">Next track</button>
       <button id="btnEdges" type="button" aria-pressed="false">Edges on</button>
+      <button id="btnGrass" type="button" aria-pressed="false">Grass on</button>
     </div>
   </header>
   <main>
@@ -439,6 +440,9 @@ function loadCourse(object,src,opt){
   if(surfaceY(solids,tee.x,tee.z,top)===null)report.push({l:'warn',t:'<b>Tee.</b> There is no surface under the tee, so the ball will fall. Move the tee onto the green.'});
   if(tee.distanceTo(cup)<CUP_R*2)report.push({l:'warn',t:'<b>Layout.</b> The tee and cup are in the same spot.'});
   const fwd=cup.clone().sub(tee).setY(0);if(fwd.lengthSq()<1e-6)fwd.set(0,0,1);fwd.normalize();
+  grassU.uDir.value.set(-fwd.z,fwd.x); // mowing stripes run from tee to cup
+  const grassy=greenParts(solids);
+  if(grassy.length)report.push({l:'ok',t:`<b>Grass.</b> ${grassy.length===1?'“'+esc(grassy[0])+'” gets':grassy.length+' green parts get'} a grass texture on top.`});
 
   // moving parts: saved choices first, then defaults from the part name
   const key=opt.key||'sample',parts=new Map();
@@ -510,6 +514,56 @@ function loadCourse(object,src,opt){
 // Dark outlines along every sharp edge, the way Onshape draws parts, so same-colored geometry stays readable.
 const EDGE_MAT=new THREE.LineBasicMaterial({color:0x0c100b,transparent:true,opacity:.7});
 let edgesOn=true; // the saved choice is read once storage is set up, further down
+// Grass: any part colored some shade of green gets a cartoon turf texture on its upward-facing surfaces,
+// tinted by the student's own green. The texture is laid from above by world position, so it's the same
+// size on every hole and lines up across parts; side faces keep their flat color.
+const grassU={uGrass:{value:null},uDir:{value:new THREE.Vector2(1,0)},uGrassOn:{value:1}};
+(function grassTexture(){
+  const N=256,cv=document.createElement('canvas');cv.width=cv.height=N;const g=cv.getContext('2d');
+  g.fillStyle='rgb(214,214,214)';g.fillRect(0,0,N,N);
+  let seed=7;const rnd=()=>(seed=(seed*16807)%2147483647)/2147483647;
+  const wrap=(f)=>{for(const dx of [-N,0,N])for(const dy of [-N,0,N]){g.save();g.translate(dx,dy);f();g.restore()}}; // draw across edges so it tiles
+  for(let i=0;i<900;i++){const x=rnd()*N,y=rnd()*N,v=190+rnd()*50;g.fillStyle=`rgb(${v},${v},${v})`;wrap(()=>g.fillRect(x,y,2,2))}       // soft speckle
+  g.lineCap='round';
+  for(let i=0;i<420;i++){ // little tufts of three blades, light tips over darker roots
+    const x=rnd()*N,y=rnd()*N,len=5+rnd()*6,light=rnd()<.55;
+    g.strokeStyle=light?`rgba(255,255,255,${.45+rnd()*.3})`:`rgba(120,120,120,${.35+rnd()*.25})`;g.lineWidth=1.6;
+    wrap(()=>{g.beginPath();for(const a of [-.45,0,.45]){g.moveTo(x,y);g.quadraticCurveTo(x+a*len*.6,y-len*.6,x+a*len,y-len)}g.stroke()});
+  }
+  const t=new THREE.CanvasTexture(cv);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.anisotropy=4;grassU.uGrass.value=t;
+})();
+const grassMats=new Map();
+function grassMaterial(mat){
+  if(grassMats.has(mat))return grassMats.get(mat);
+  const gm=mat.clone();gm.userData.isGrass=true;gm.customProgramCacheKey=()=>'cadgolf-grass';
+  gm.onBeforeCompile=sh=>{
+    Object.assign(sh.uniforms,grassU);
+    sh.vertexShader='varying vec3 vGrassPos;varying vec3 vGrassN;\n'+sh.vertexShader.replace('#include <begin_vertex>',
+      '#include <begin_vertex>\nvGrassPos=(modelMatrix*vec4(transformed,1.0)).xyz;vGrassN=normalize(mat3(modelMatrix)*objectNormal);');
+    sh.fragmentShader='uniform sampler2D uGrass;uniform vec2 uDir;uniform float uGrassOn;varying vec3 vGrassPos;varying vec3 vGrassN;\n'+sh.fragmentShader.replace('#include <map_fragment>',
+      `#include <map_fragment>
+      float gk=uGrassOn*smoothstep(.55,.85,normalize(vGrassN).y);
+      vec2 gp=vGrassPos.xz;
+      vec3 g1=texture2D(uGrass,gp/.32).rgb,g2=texture2D(uGrass,gp/1.9+.37).rgb;
+      float stripe=smoothstep(.3,.7,.5+.5*sin(dot(gp,uDir)*3.14159/.42));
+      vec3 turf=g1*mix(vec3(1.),g2,.45)*mix(.97,1.2,stripe)*1.06;
+      diffuseColor.rgb*=mix(vec3(1.),turf,gk);`);
+  };
+  grassMats.set(mat,gm);return gm;
+}
+function isGreen(c){ // hue between yellow-green and blue-green, and colorful enough not to be grey
+  const hsl={};c.getHSL(hsl);return hsl.h>.18&&hsl.h<.48&&hsl.s>.22&&hsl.l>.06&&hsl.l<.88;
+}
+function greenParts(list){
+  const parts=new Set();
+  for(const m of list){
+    const swap=mat=>mat&&!mat.userData.isGrass&&mat.color&&isGreen(mat.color)?grassMaterial(mat):mat;
+    const before=m.material;m.material=Array.isArray(before)?before.map(swap):swap(before);
+    const now=Array.isArray(m.material)?m.material:[m.material];
+    if(now.some(x=>x&&x.userData.isGrass))parts.add(m.userData.part||m.name);
+  }
+  return [...parts];
+}
 function addEdges(m){
   if(!m.userData.edges){const l=new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry,28),EDGE_MAT);l.raycast=()=>{};m.add(l);m.userData.edges=l}
   m.userData.edges.visible=edgesOn;
@@ -945,6 +999,9 @@ $('btnEdit').onclick=()=>{editOpen=!editOpen;showMode()};
 $('btnFlag').onclick=()=>{store.set('cadgolf.decal.'+course.key,null);course.decalURL=null;makeFlag(null);for(const pl of course.decals)pl.visible=false;hint('Back to the plain flag.')};
 $('btnEdges').onclick=()=>{edgesOn=!edgesOn;store.set('cadgolf.edges',edgesOn);showEdges()};
 edgesOn=store.get('cadgolf.edges',true);showEdges();
+function showGrass(){const on=grassU.uGrassOn.value>0;$('btnGrass').textContent=on?'Grass on':'Grass off';$('btnGrass').setAttribute('aria-pressed',!on)}
+$('btnGrass').onclick=()=>{grassU.uGrassOn.value=grassU.uGrassOn.value>0?0:1;store.set('cadgolf.grass',grassU.uGrassOn.value>0);showGrass()};
+grassU.uGrassOn.value=store.get('cadgolf.grass',true)?1:0;showGrass();
 const slug=t=>(t||'my hole').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')||'my-hole';
 $('shareForm').addEventListener('submit',async ev=>{
   ev.preventDefault();if(!course.bytes)return;
