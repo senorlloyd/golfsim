@@ -35,7 +35,7 @@ button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);
 main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:12px}
 .stage{position:relative;min-height:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--sky)}
 .stage canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none}
-.stage.drag::after{content:"Drop a hole (.golfhole or glTF), a decal picture or a MIDI tune";position:absolute;inset:8px;display:grid;place-items:center;
+.stage.drag::after{content:"Drop a hole (.golfhole or glTF), a flag picture or a MIDI tune";position:absolute;inset:8px;display:grid;place-items:center;
   border:2px dashed var(--accent);border-radius:6px;background:color-mix(in srgb,var(--panel) 85%,transparent);
   font:600 1.1rem var(--display);color:var(--ink);pointer-events:none}
 .score{position:absolute;left:12px;top:10px;pointer-events:none}
@@ -150,7 +150,7 @@ h2{font:600 1.05rem var(--display);margin:0}
           <input id="author" type="text" maxlength="30" placeholder="Your name" aria-label="Your name" autocomplete="off">
           <button type="submit" id="btnShare">Download my hole</button>
         </form>
-        <p class="names" id="shareNote">Saves one .golfhole file with the model, moving parts, tee and cup, and decal. Anyone can open it here to play your hole exactly as you set it up.</p>
+        <p class="names" id="shareNote">Saves one .golfhole file with the model, moving parts, tee and cup, and flag picture. Anyone can open it here to play your hole exactly as you set it up.</p>
       </div>
       <div class="edit">
         <div class="label">Moving parts</div>
@@ -162,6 +162,7 @@ h2{font:600 1.05rem var(--display);margin:0}
           <button id="btnTee" type="button" aria-pressed="false">Place tee</button>
           <button id="btnCup" type="button" aria-pressed="false">Place cup</button>
           <button id="btnUp" type="button">Switch up axis</button>
+          <button id="btnFlag" type="button">Plain flag</button>
         </div>
       </div>
       <div class="edit">
@@ -174,7 +175,7 @@ h2{font:600 1.05rem var(--display);margin:0}
           <li>Drag back from the ball and let go to putt. Drag anywhere else to orbit, scroll to zoom.</li>
           <li>A part with <b>tee</b> in its name marks the start. One with <b>cup</b> or <b>hole</b> marks the hole. Everything else is solid.</li>
           <li>Parts named <b>spinner</b> or <b>windmill</b> spin, around a part named <b>hub</b> if one sits on them. Add a speed like “spinner 20rpm”. Parts named <b>slider</b> or <b>gate</b> slide across the hole. Change any part under Moving parts.</li>
-          <li>Drop a PNG or JPG to print it on top of a part named <b>decal</b>, facing the cup.</li>
+          <li>Drop a PNG or JPG to put it on the flag. It also prints on top of any part named <b>decal</b>.</li>
           <li>Open or drop a <b>.golfhole</b> file to play a hole someone shared.</li>
           <li>Ball is 42.7 mm, cup is 108 mm, same for every hole.</li>
           <li>Off the course costs one stroke. The hole ends after 8.</li>
@@ -343,11 +344,29 @@ new ResizeObserver(resize).observe(stage);resize();
 const ball=new THREE.Mesh(new THREE.SphereGeometry(BALL_R,24,16),new THREE.MeshStandardMaterial({color:0xffffff,roughness:.35}));
 ball.castShadow=true;scene.add(ball);
 const arrow=new THREE.Mesh(new THREE.BoxGeometry(.012,.004,1),new THREE.MeshBasicMaterial({color:0xe4572e}));arrow.visible=false;scene.add(arrow);
+// The flag: plain orange, or a student's picture. Front and back are separate faces so the picture reads
+// the right way round from either side, and the cloth ripples a little in the wind.
+const flagGroup=new THREE.Group();let flagGeo=null,flagX=null;
+function makeFlag(tex,aspect){
+  flagGroup.children.slice().forEach(c=>{flagGroup.remove(c);c.material.dispose();if(c.material.map&&c.material.map!==tex)c.material.map.dispose()});
+  let h=tex?.08:.075,w=tex?Math.min(.18,Math.max(.06,h*aspect)):.12;if(tex)h=w/aspect;
+  flagGeo=new THREE.PlaneGeometry(w,h,16,1);flagGeo.translate(w/2,0,0);flagX=Float32Array.from(flagGeo.attributes.position.array.filter((v,i)=>i%3===0));
+  const front=new THREE.MeshBasicMaterial({color:tex?0xffffff:0xe4572e,map:tex||null,side:THREE.FrontSide});
+  let backMap=null;if(tex){backMap=tex.clone();backMap.needsUpdate=true;backMap.wrapS=THREE.RepeatWrapping;backMap.repeat.x=-1;backMap.offset.x=1}
+  const back=new THREE.MeshBasicMaterial({color:tex?0xffffff:0xe4572e,map:backMap,side:THREE.BackSide});
+  flagGroup.add(new THREE.Mesh(flagGeo,front),new THREE.Mesh(flagGeo,back));
+  flagGroup.position.set(0,.445-h/2,0);flagGroup.userData.w=w;
+}
+function waveFlag(t){
+  if(!flagGeo)return;const p=flagGeo.attributes.position,w=flagGroup.userData.w;
+  for(let i=0;i<p.count;i++){const x=flagX[i];p.setZ(i,Math.sin(x*42-t*4.2)*.006*(x/w))}
+  p.needsUpdate=true;
+}
+makeFlag(null);
 const cupMark=new THREE.Group();
 {const d=new THREE.Mesh(new THREE.CircleGeometry(CUP_R,32),new THREE.MeshBasicMaterial({color:0x0b0f0c}));d.rotation.x=-Math.PI/2;d.position.y=.0015;
  const pole=new THREE.Mesh(new THREE.CylinderGeometry(.004,.004,.45,8),new THREE.MeshStandardMaterial({color:0xf2f2ee}));pole.position.y=.225;
- const flag=new THREE.Mesh(new THREE.PlaneGeometry(.12,.075),new THREE.MeshBasicMaterial({color:0xe4572e,side:THREE.DoubleSide}));flag.position.set(.06,.41,0);
- cupMark.add(d,pole,flag);scene.add(cupMark)}
+ cupMark.add(d,pole,flagGroup);scene.add(cupMark)}
 const teeMark=new THREE.Mesh(new THREE.RingGeometry(.035,.045,32),new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:.8}));
 teeMark.rotation.x=-Math.PI/2;scene.add(teeMark);
 
@@ -485,7 +504,7 @@ function loadCourse(object,src,opt){
   $('checks').innerHTML=report.map(r=>`<li><span class="tag ${r.l}">${r.l==='ok'?'OK':r.l==='warn'?'Check':'Fix'}</span><p>${r.t}</p></li>`).join('');
   $('names').textContent=[...names].slice(0,40).join(', ')+(names.size>40?` … and ${names.size-40} more`:'');
   lastSaved=null;simT=0;placeMarks();restart();if(!opt.keepView)viewFromTee();showBoard();renderMotion();
-  const pic=opt.decal||store.get('cadgolf.decal.'+key,null);if(pic&&decals.length)applyDecal(pic,true);
+  const pic=opt.decal||store.get('cadgolf.decal.'+key,null);if(pic)applyDecal(pic,true);else makeFlag(null);
   if(!opt.keepView)editOpen=!course.pkg;showMode();
 }
 // Dark outlines along every sharp edge, the way Onshape draws parts, so same-colored geometry stays readable.
@@ -524,7 +543,7 @@ function moverAt(m,t){
 }
 function applyMovers(dt){simT+=dt;course.movers.forEach((m,k)=>{moverAt(m,simT);engine.setMover(k,m.p,m.q,m.lv,m.av)})}
 function showMovers(){for(const m of course.movers){moverAt(m,simT);m.group.position.copy(m.p);m.group.quaternion.copy(m.q)}}
-function placeMarks(){cupMark.children[0].visible=!course.realHole;cupMark.position.copy(course.cup);teeMark.position.copy(course.tee).y+=.002}
+function placeMarks(){cupMark.children[0].visible=!course.realHole;cupMark.position.copy(course.cup);if(course.fwd)cupMark.rotation.y=Math.atan2(-course.fwd.x,-course.fwd.z);teeMark.position.copy(course.tee).y+=.002}
 
 /* ---------- sample hole (built in metres, same pipeline as a dropped file) ---------- */
 function sampleHole(){
@@ -625,9 +644,8 @@ $('motion').addEventListener('change',e=>{
   hint('Moving parts updated. The hole restarted.');
 });
 
-/* ---------- decal pictures ---------- */
+/* ---------- hole pictures: shown on the flag, and on any part named decal ---------- */
 function applyDecal(url,quiet){
-  if(!course.decals.length){if(!quiet)fileError('This hole has no part named “decal”. In Onshape, add a thin part named decal where the picture should go, export again, then drop the picture.');return}
   const img=new Image();
   img.onload=()=>{
     let src=img;
@@ -637,10 +655,11 @@ function applyDecal(url,quiet){
     }
     const tex=new THREE.Texture(src);tex.encoding=THREE.sRGBEncoding;tex.anisotropy=4;tex.needsUpdate=true;
     const a=img.width/img.height;
+    makeFlag(tex,a);
     for(const pl of course.decals){const {along,across}=pl.userData;let w=across*.94,h=w/a;if(h>along*.94){h=along*.94;w=h*a}
       pl.scale.set(w,h,1);if(pl.material.map)pl.material.map.dispose();pl.material.map=tex;pl.material.needsUpdate=true;pl.visible=true}
     course.decalURL=url;
-    if(!quiet){store.set('cadgolf.decal.'+course.key,url);hint('Picture added to the decal.')}
+    if(!quiet){store.set('cadgolf.decal.'+course.key,url);hint(course.decals.length?'Picture added to the flag and the decal.':'Picture added to the flag.')}
   };
   img.onerror=()=>{if(!quiet)fileError('That picture could not be read. Try saving it as a PNG.')};
   img.src=url;
@@ -850,6 +869,7 @@ function frame(now){
     if(state==='moving'||state==='rest')ball.position.copy(pos)}
   else{acc=0;simT+=dt}
   if(course.movers.length)showMovers();
+  waveFlag(now/1000);
   if(state==='sinking'){sink+=dt;const k=Math.min(1,sink/.35);
     ball.position.set(pos.x+(course.cup.x-pos.x)*k,pos.y-k*BALL_R*2.2,pos.z+(course.cup.z-pos.z)*k);ball.scale.setScalar(1-.5*k);
     if(k>=1){ball.scale.setScalar(0);finish(NAMES[strokes]||`Holed in ${strokes}`,true)}}
@@ -916,12 +936,13 @@ function showMode(){
   document.querySelector('.app').classList.toggle('play',!!pkg&&!editOpen);
   if(pkg){$('holeTitle').textContent=pkg.title;$('holeBy').textContent=pkg.author?`by ${pkg.author}`:'';$('btnEdit').textContent=editOpen?'Hide editing tools':'Show editing tools'}
   $('btnShare').disabled=!course.bytes;
-  $('shareNote').textContent=course.bytes?'Saves one .golfhole file with the model, moving parts, tee and cup, and decal. Anyone can open it here to play your hole exactly as you set it up.'
+  $('shareNote').textContent=course.bytes?'Saves one .golfhole file with the model, moving parts, tee and cup, and flag picture. Anyone can open it here to play your hole exactly as you set it up.'
     :'Open your own hole file first. The sample hole can’t be shared.';
   if(document.activeElement!==$('holeName'))$('holeName').value=pkg?pkg.title:(course.fileName||'').replace(/\.(glb|gltf)$/i,'');
   if(document.activeElement!==$('author'))$('author').value=pkg?pkg.author:store.get('cadgolf.name','');
 }
 $('btnEdit').onclick=()=>{editOpen=!editOpen;showMode()};
+$('btnFlag').onclick=()=>{store.set('cadgolf.decal.'+course.key,null);course.decalURL=null;makeFlag(null);for(const pl of course.decals)pl.visible=false;hint('Back to the plain flag.')};
 $('btnEdges').onclick=()=>{edgesOn=!edgesOn;store.set('cadgolf.edges',edgesOn);showEdges()};
 edgesOn=store.get('cadgolf.edges',true);showEdges();
 const slug=t=>(t||'my hole').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')||'my-hole';
